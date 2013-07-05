@@ -1,5 +1,8 @@
 var Canvas = require('canvas'),
   fs = require('fs'),
+  http = require('http'),
+  https = require('https'),
+  url = require('url'),
   Image = Canvas.Image;
 
 var classifySkin = function(r, g, b) {
@@ -36,146 +39,187 @@ var classifySkin = function(r, g, b) {
 	  return [r / sum, g / sum, b / sum];
   };
 
-module.exports = {
-  scan: function(src, callback) {
-    fs.readFile(src, function(err, data) {
-      if(err)
-        throw err;
-      var canvas = new Canvas(1, 1),
-        ctx = canvas.getContext('2d'),
-        img = new Image,
-        skinRegions = [],
-			  skinMap = [],
-			  detectedRegions = [],
-			  mergeRegions = [],
-			  detRegions = [],
-			  lastFrom = -1,
-			  lastTo = -1,
-        totalSkin = 0,
-			  addMerge = function(from, to) {
-				  lastFrom = from;
-				  lastTo = to;
-				  var len = mergeRegions.length,
-				    fromIndex = -1,
-				    toIndex = -1,
-				    region,
-				    rlen;
-				  while(len--) {
-					  region = mergeRegions[len];
-					  rlen = region.length;
-					  while(rlen--) {
-						  if(region[rlen] == from)
-							  fromIndex = len;
-						  if(region[rlen] == to)
-							  toIndex = len;
-					  }
-				  }
-				  if(fromIndex != -1 && toIndex != -1 && fromIndex == toIndex)
-					  return;
-				  if(fromIndex == -1 && toIndex == -1)
-					  return mergeRegions.push([from, to]);
-				  if(fromIndex != -1 && toIndex == -1)
-					  return mergeRegions[fromIndex].push(to);
-				  if(fromIndex == -1 && toIndex != -1)
-					  return mergeRegions[toIndex].push(from);
-				  if(fromIndex != -1 && toIndex != -1 && fromIndex != toIndex) {
-					  mergeRegions[fromIndex] = mergeRegions[fromIndex].concat(mergeRegions[toIndex]);
-					  mergeRegions = [].concat(mergeRegions.slice(0, toIndex), mergeRegions.slice(toIndex + 1));
-				  }
-			  },
-			  totalPixels,
-			  imageData,
-			  length;
-      img.src = data;
-		  canvas.width = img.width;
-		  canvas.height = img.height;
-		  totalPixels = canvas.width * canvas.height;
-		  ctx.drawImage(img, 0, 0);
-      imageData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-			length = imageData.length;
-			for(var i = 0, u = 1; i < length; i += 4, u++) {
-				var r = imageData[i],
-				  g = imageData[i + 1],
-				  b = imageData[i + 2],
-				  x = u > canvas.width ? u % canvas.width - 1 : u,
-				  y = u > canvas.width ? Math.ceil(u / canvas.width) - 1 : 1;
-				if(classifySkin(r, g, b)) {
-					skinMap.push({id: u, skin: true, region: 0, x: x, y: y, checked: false});
-					var region = -1,
-					  checkIndexes = [u - 2, u - canvas.width - 2, u - canvas.width - 1, u - canvas.width],
-					  checker = false;
-					for(var o = 0, index; o < 4; o++) {
-						index = checkIndexes[o];
-						if(skinMap[index] && skinMap[index].skin) {
-							if(skinMap[index].region != region && region != -1 && lastFrom != region && lastTo != skinMap[index].region)
-								addMerge(region, skinMap[index].region);
-							region = skinMap[index].region;
-							checker = true;
-						}
-					}
-					if(!checker) {
-						skinMap[u - 1].region = detectedRegions.length;
-						detectedRegions.push([skinMap[u - 1]]);
-						continue;
-					}
-					else
-						if(region > -1) {
-							if(!detectedRegions[region])
-								detectedRegions[region] = [];
-							skinMap[u - 1].region = region;
-							detectedRegions[region].push(skinMap[u - 1]);
-						}
-				}
-				else
-					skinMap.push({ id: u, skin: false, region: 0, x: x, y: y, checked: false });
-			}
-			length = mergeRegions.length;
-			while(length--) {
-				region = mergeRegions[length];
-				var rlen = region.length;
-				if(!detRegions[length])
-					detRegions[length] = [];
-				while(rlen--) {
-					index = region[rlen];
-					detRegions[length] = detRegions[length].concat(detectedRegions[index]);
-					detectedRegions[index] = [];
-				}
-			}
-			length = detectedRegions.length;
-			while(length--)
-				if(detectedRegions[length].length > 0)
-					detRegions.push(detectedRegions[length]);
-			length = detRegions.length;
-			for(var i = 0; i < length; i++)
-				if(detRegions[i].length > 30)
-					skinRegions.push(detRegions[i]);
-			length = skinRegions.length;
-			if(length < 3)
-				return callback && callback(false);
-			(function() {
-				var sorted = false, temp;
-				while(!sorted) {
-					sorted = true;
-					for(var i = 0; i < length-1; i++)
-						if(skinRegions[i].length < skinRegions[i + 1].length) {
-							sorted = false;
-							temp = skinRegions[i];
-							skinRegions[i] = skinRegions[i + 1];
-							skinRegions[i + 1] = temp;
-						}
-				}
-			})();
-			while(length--)
-				totalSkin += skinRegions[length].length;
-			if((totalSkin / totalPixels) * 100 < 15)
-				return callback && callback(false);
-			if((skinRegions[0].length / totalSkin) * 100 < 35 && (skinRegions[1].length / totalSkin) * 100 < 30 && (skinRegions[2].length / totalSkin) * 100 < 30)
-				return callback && callback(false);
-			if((skinRegions[0].length / totalSkin) * 100 < 45)
-				return callback && callback(false);
-			if(skinRegions.length > 60)
-				return callback && callback(false);
-			return callback && callback(true);
-		});
+var scan = function(data, callback) {
+    var canvas = new Canvas(1, 1),
+      ctx = canvas.getContext('2d'),
+      img = new Image(),
+      skinRegions = [],
+      skinMap = [],
+      detectedRegions = [],
+      mergeRegions = [],
+      detRegions = [],
+      lastFrom = -1,
+      lastTo = -1,
+      totalSkin = 0,
+      addMerge = function(from, to) {
+        lastFrom = from;
+        lastTo = to;
+        var len = mergeRegions.length,
+          fromIndex = -1,
+          toIndex = -1,
+          region,
+          rlen;
+        while(len--) {
+          region = mergeRegions[len];
+          rlen = region.length;
+          while(rlen--) {
+            if(region[rlen] == from)
+              fromIndex = len;
+            if(region[rlen] == to)
+              toIndex = len;
+          }
+        }
+        if(fromIndex != -1 && toIndex != -1 && fromIndex == toIndex)
+          return;
+        if(fromIndex == -1 && toIndex == -1)
+          return mergeRegions.push([from, to]);
+        if(fromIndex != -1 && toIndex == -1)
+          return mergeRegions[fromIndex].push(to);
+        if(fromIndex == -1 && toIndex != -1)
+          return mergeRegions[toIndex].push(from);
+        if(fromIndex != -1 && toIndex != -1 && fromIndex != toIndex) {
+          mergeRegions[fromIndex] = mergeRegions[fromIndex].concat(mergeRegions[toIndex]);
+          mergeRegions = [].concat(mergeRegions.slice(0, toIndex), mergeRegions.slice(toIndex + 1));
+        }
+      },
+      totalPixels,
+      imageData,
+      length;
+    img.src = data;
+    canvas.width = img.width;
+    canvas.height = img.height;
+    totalPixels = canvas.width * canvas.height;
+    try {
+	    ctx.drawImage(img, 0, 0);
+    } catch (e) {
+	    console.log('unsupported image format');
+    }
+    imageData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    length = imageData.length;
+    for(var i = 0, u = 1; i < length; i += 4, u++) {
+      var r = imageData[i],
+        g = imageData[i + 1],
+        b = imageData[i + 2],
+        x = u > canvas.width ? u % canvas.width - 1 : u,
+        y = u > canvas.width ? Math.ceil(u / canvas.width) - 1 : 1;
+      if(classifySkin(r, g, b)) {
+        skinMap.push({id: u, skin: true, region: 0, x: x, y: y, checked: false});
+        var region = -1,
+          checkIndexes = [u - 2, u - canvas.width - 2, u - canvas.width - 1, u - canvas.width],
+          checker = false;
+        for(var o = 0, index; o < 4; o++) {
+          index = checkIndexes[o];
+          if(skinMap[index] && skinMap[index].skin) {
+            if(skinMap[index].region != region && region != -1 && lastFrom != region && lastTo != skinMap[index].region)
+              addMerge(region, skinMap[index].region);
+            region = skinMap[index].region;
+            checker = true;
+          }
+        }
+        if(!checker) {
+          skinMap[u - 1].region = detectedRegions.length;
+          detectedRegions.push([skinMap[u - 1]]);
+          continue;
+        }
+        else
+          if(region > -1) {
+            if(!detectedRegions[region])
+              detectedRegions[region] = [];
+            skinMap[u - 1].region = region;
+            detectedRegions[region].push(skinMap[u - 1]);
+          }
+      }
+      else
+        skinMap.push({ id: u, skin: false, region: 0, x: x, y: y, checked: false });
+    }
+    length = mergeRegions.length;
+    while(length--) {
+      region = mergeRegions[length];
+      var rlen = region.length;
+      if(!detRegions[length])
+        detRegions[length] = [];
+      while(rlen--) {
+        index = region[rlen];
+        detRegions[length] = detRegions[length].concat(detectedRegions[index]);
+        detectedRegions[index] = [];
+      }
+    }
+    length = detectedRegions.length;
+    while(length--)
+      if(detectedRegions[length].length > 0)
+        detRegions.push(detectedRegions[length]);
+    length = detRegions.length;
+    for(var i = 0; i < length; i++)
+      if(detRegions[i].length > 30)
+        skinRegions.push(detRegions[i]);
+    length = skinRegions.length;
+    if(length < 3)
+      return callback && callback(false);
+    (function() {
+      var sorted = false, temp;
+      while(!sorted) {
+        sorted = true;
+        for(var i = 0; i < length-1; i++)
+          if(skinRegions[i].length < skinRegions[i + 1].length) {
+            sorted = false;
+            temp = skinRegions[i];
+            skinRegions[i] = skinRegions[i + 1];
+            skinRegions[i + 1] = temp;
+          }
+      }
+    })();
+    while(length--)
+      totalSkin += skinRegions[length].length;
+    if((totalSkin / totalPixels) * 100 < 15)
+      return callback && callback(false);
+    if((skinRegions[0].length / totalSkin) * 100 < 35 && (skinRegions[1].length / totalSkin) * 100 < 30 && (skinRegions[2].length / totalSkin) * 100 < 30)
+      return callback && callback(false);
+    if((skinRegions[0].length / totalSkin) * 100 < 45)
+      return callback && callback(false);
+    if(skinRegions.length > 60)
+      return callback && callback(false);
+    return callback && callback(true);
   }
+module.exports = {
+  scanFile: function(src, callback){
+    fs.readFile(src, function(err, data) {
+      if (err) throw err;
+      scan(data, callback);
+    });
+  },
+  scanURL: function(src, callback){
+    var data = [];
+    var opts = url.parse(src);
+    // opts.headers = {
+	    // 'Content-Type': 'image/jpeg'
+    // };
+    if ( src.match( 'https' ) ) {
+      https.request(opts, function(res) {
+        res.setEncoding('binary');
+        res.on('data', function(chunk) {
+          data.push(chunk.toString('binary'));
+        });
+        res.on('error', function(err) {
+          throw err;
+        });
+        res.on('end', function() {
+          data = new Buffer(data.join(''), 'binary');
+          scan(data, callback);
+        });
+      }).end();
+    } else {
+      https.request(opts, function(res) {
+        res.setEncoding('utf8');
+        res.on('data', function(chunk) {
+          data.push(chunk);
+        });
+        res.on('error', function(err) {
+          throw err;
+        });
+        res.on('end', function() {
+          scan(new Buffer(data), callback);
+        });
+      }).end();
+    }
+  },
 };
