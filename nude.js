@@ -208,16 +208,17 @@ module.exports = {
         });
       }).end();
     } else {
-      https.request(opts, function(res) {
-        res.setEncoding('utf8');
+      http.request(opts, function(res) {
+        res.setEncoding('binary');
         res.on('data', function(chunk) {
-          data.push(chunk);
+          data.push(chunk.toString('binary'));
         });
         res.on('error', function(err) {
           throw err;
         });
         res.on('end', function() {
-          scan(new Buffer(data), callback);
+          data = new Buffer(data.join(''), 'binary');
+          scan(data, callback);
         });
       }).end();
     }
