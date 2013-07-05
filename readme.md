@@ -10,6 +10,10 @@ Node.js port of [nude.js](https://github.com/pa7/nude.js) by [Patrick Wied](http
 
 	var nude = require('nude');
 	
-	nude.scan(__dirname + '/images/photo.jpg', function(res) {
+	nude.scanFile(__dirname + '/images/photo.jpg', function(res) {
+	  console.log('Contains nudity: ' + res);
+	});
+
+	nude.scanURL('http://awesome.com/images/photo.jpg', function(res) {
 	  console.log('Contains nudity: ' + res);
 	});
